@@ -6,9 +6,7 @@ services:
     volumes:
       - ./liquidsoap/radio.liq:/etc/liquidsoap/radio.liq
       - ./music/songs:/music/songs
-    ports:
-      - "8000:8000"
-      - "1234:1234"
+    # No host ports exposed — all internal via radio-net
     command: /etc/liquidsoap/radio.liq
     networks:
       - radio-net
@@ -40,6 +38,7 @@ services:
     volumes:
       - ./music:/app/music
       - ./publisher/data:/app/data
+      - ./publisher/src:/app/src
     networks:
       - radio-net
 
@@ -50,6 +49,8 @@ services:
     depends_on:
       - publisher
       - liquidsoap
+    volumes:
+      - ./watchdog/src:/app/src
     environment:
       - PUBLISHER_URL=http://publisher:3000
       - HEALTH_CHECK_INTERVAL=30000
