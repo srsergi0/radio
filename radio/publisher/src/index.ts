@@ -77,6 +77,7 @@ console.log(`  DEL  /api/downloads`);
 console.log(`  GET  /api/stream`);
 console.log(`  POST /api/stream/play`);
 console.log(`  POST /api/stream/pause`);
+console.log(`  GET  /api/stream/skip`);
 console.log(`  POST /api/stream/skip`);
 console.log(`  POST /api/stream/reload`);
 console.log(`  POST /api/stream/queue`);

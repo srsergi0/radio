@@ -20,7 +20,7 @@ radio = mksafe(radio)
 queue = request.queue(id="queue")
 
 # Fallback: queued tracks play first, then regular playlist
-main = fallback(track_sensitive=false, [queue, radio])
+main = fallback(track_sensitive=true, [queue, radio])
 
 # Output via HTTP (harbor) on port 8000
 output.harbor(

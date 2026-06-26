@@ -258,6 +258,15 @@ app.post("/api/stream/pause", async (c) => {
   }
 });
 
+app.get("/api/stream/skip", async (c) => {
+  try {
+    await skipTrack();
+    return c.json({ ok: true, data: { action: "skip" } });
+  } catch (err: any) {
+    return c.json({ ok: false, error: err.message }, 500);
+  }
+});
+
 app.post("/api/stream/skip", async (c) => {
   try {
     await skipTrack();

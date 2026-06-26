@@ -1,103 +1,89 @@
-import { createConnection, type Socket } from "net";
 import { spawnSync } from "child_process";
+import { createConnection, type Socket } from "net";
 
 const LIQUIDSOAP_HOST = process.env.LIQUIDSOAP_HOST || "localhost";
 const LIQUIDSOAP_TELNET_PORT = parseInt(process.env.LIQUIDSOAP_TELNET_PORT || "1234");
 
-let socket: Socket | null = null;
 let connected = false;
-let responseBuffer = "";
-let commandQueue: Array<{ resolve: (lines: string[]) => void; reject: (reason: any) => void }> = [];
-let currentLines: string[] = [];
+let reconnectTimer: Timer | null = null;
 let durationCache = new Map<string, { duration: number; cachedAt: number }>();
 const DURATION_CACHE_TTL = 3600000;
 let lastQueuedRid: string | null = null;
 
-function connect() {
-  if (socket) return;
-
-  socket = createConnection(LIQUIDSOAP_TELNET_PORT, LIQUIDSOAP_HOST);
-
-  socket.on("connect", () => {
-    console.log("[liquidsoap] Telnet connected");
+function keepAlive() {
+  const s = createConnection(LIQUIDSOAP_TELNET_PORT, LIQUIDSOAP_HOST);
+  s.on("connect", () => {
     connected = true;
+    s.end();
   });
-
-  socket.on("data", (data) => {
-    responseBuffer += data.toString();
-
-    while (responseBuffer.includes("\n")) {
-      const nlIndex = responseBuffer.indexOf("\n");
-      const line = responseBuffer.substring(0, nlIndex).trim();
-      responseBuffer = responseBuffer.substring(nlIndex + 1);
-
-      if (line === "END") {
-        if (commandQueue.length > 0) {
-          const entry = commandQueue.shift()!;
-          entry.resolve(currentLines);
-          currentLines = [];
-        }
-        continue;
-      }
-
-      if (line !== "") {
-        currentLines.push(line);
-      }
-    }
-  });
-
-  socket.on("error", (err) => {
-    if (connected) {
-      console.error("[liquidsoap] Telnet error:", err.message);
-    }
+  s.on("error", () => {});
+  s.on("close", () => {
     connected = false;
-    socket = null;
-    commandQueue.forEach(({ reject }) => reject(new Error("Connection lost")));
-    commandQueue = [];
-    currentLines = [];
-    setTimeout(connect, 3000);
-  });
-
-  socket.on("close", () => {
-    if (connected) {
-      console.log("[liquidsoap] Telnet disconnected");
-    }
-    connected = false;
-    socket = null;
-    commandQueue.forEach(({ reject }) => reject(new Error("Connection closed")));
-    commandQueue = [];
-    currentLines = [];
-    setTimeout(connect, 3000);
   });
 }
 
-export function sendCommand(cmd: string, timeoutMs = 5000): Promise<string[]> {
+export function sendCommand(cmd: string, timeoutMs = 10000): Promise<string[]> {
   return new Promise((resolve, reject) => {
-    if (!socket || !connected) {
-      reject(new Error("Not connected to Liquidsoap"));
-      return;
-    }
-
-    const timeout = setTimeout(() => {
-      const idx = commandQueue.findIndex((q) => q.resolve === entry.resolve);
-      if (idx !== -1) commandQueue.splice(idx, 1);
+    const s = createConnection(LIQUIDSOAP_TELNET_PORT, LIQUIDSOAP_HOST);
+    const lines: string[] = [];
+    let buf = "";
+    let done = false;
+    const timer = setTimeout(() => {
+      done = true;
+      s.destroy();
       reject(new Error("Command timeout"));
     }, timeoutMs);
 
-    const entry = {
-      resolve: (lines: string[]) => {
-        clearTimeout(timeout);
-        resolve(lines);
-      },
-      reject: (reason: any) => {
-        clearTimeout(timeout);
-        reject(reason);
-      },
-    };
+    s.on("connect", () => {
+      connected = true;
+      s.write(cmd + "\n");
+    });
 
-    commandQueue.push(entry);
-    socket.write(cmd + "\n");
+    s.on("data", (data) => {
+      buf += data.toString();
+      while (buf.includes("\n")) {
+        const idx = buf.indexOf("\n");
+        const line = buf.substring(0, idx).trim();
+        buf = buf.substring(idx + 1);
+        if (line === "END") {
+          done = true;
+          clearTimeout(timer);
+          s.end();
+          resolve(lines);
+          return;
+        }
+        if (line !== "") {
+          lines.push(line);
+        }
+      }
+    });
+
+    s.on("error", (err) => {
+      if (!done) {
+        done = true;
+        clearTimeout(timer);
+        reject(err);
+      }
+    });
+
+    s.on("close", () => {
+      if (!done) {
+        done = true;
+        clearTimeout(timer);
+        if (lines.length > 0) {
+          resolve(lines);
+        } else {
+          reject(new Error("Connection closed"));
+        }
+      }
+    });
   });
+}
+
+function ensureConnected() {
+  if (!connected) {
+    keepAlive();
+  }
 }
 
 export async function skipTrack(): Promise<void> {
@@ -122,12 +108,9 @@ export async function getCurrentRequestId(): Promise<string | null> {
       }
     }
     if (allRids.length === 0) return null;
-    // Return the highest RID (most recent)
     const sorted = allRids.sort((a, b) => parseInt(b) - parseInt(a));
     const rid = sorted[0];
-    if (lastQueuedRid && rid !== lastQueuedRid) {
-      lastQueuedRid = null;
-    }
+    if (lastQueuedRid && rid !== lastQueuedRid) lastQueuedRid = null;
     return rid;
   } catch {
     return null;
@@ -259,8 +242,7 @@ export async function queuePush(filepath: string): Promise<string | null> {
 
 export async function queueList(): Promise<string[]> {
   try {
-    const lines = await sendCommand("queue.queue");
-    return lines;
+    return await sendCommand("queue.queue");
   } catch {
     return [];
   }
@@ -276,6 +258,7 @@ export async function playFileNow(filepath: string): Promise<boolean> {
   try {
     const rid = await queuePush(filepath);
     if (!rid) return false;
+    await new Promise((r) => setTimeout(r, 1000));
     await skipTrack();
     return true;
   } catch {
@@ -288,7 +271,7 @@ export async function reloadPlaylist(): Promise<void> {
 }
 
 export function initLiquidsoap(): void {
-  connect();
+  connected = true;
 }
 
 export function isLiquidsoapConnected(): boolean {
