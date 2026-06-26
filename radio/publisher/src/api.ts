@@ -1,9 +1,9 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { loadTimeline, saveTimeline, addTrack, insertTrack, updateTrack, removeTrack, reorderTracks, setCurrentIndex, clearTimeline, getCurrentTrack, getTrackById } from "./playlist";
-import { initLibrary, listSongs, listInterludios, deleteTrack, getLibraryStats } from "./library";
+import { initLibrary, listSongs, listInterludios, deleteTrack, getLibraryStats, scanLibrary, getTrackByFile, getTrackByUrl } from "./library";
 import { downloadFromSpotify, getDownloadJob, getAllDownloads, cancelDownload, clearDownloads } from "./spotdl";
-import { skipTrack, pausePlayback, startPlayback, getStreamStatus, reloadPlaylist, isLiquidsoapConnected, queuePush, queueList, queueClear, playFileNow, queueLength } from "./liquidsoap";
+import { skipTrack, pausePlayback, startPlayback, getStreamStatus, reloadPlaylist, isLiquidsoapConnected, queuePush, queueList, queueClear, playFileNow, queueLength, sendCommand } from "./liquidsoap";
 import { loadConfig, updateConfig } from "./config";
 import type { Track } from "./types";
 
@@ -64,24 +64,24 @@ app.get("/api/library/stats", (c) => {
   return c.json({ ok: true, data: getLibraryStats() });
 });
 
-app.get("/api/library/:file", (c) => {
-  const file = c.req.param("file");
-  const allTracks = [...listSongs(), ...listInterludios()];
-  const track = allTracks.find((t) => t.file === file);
+app.get("/api/library/track", (c) => {
+  const file = c.req.query("file");
+  if (!file) return c.json({ ok: false, error: "file query param required" }, 400);
+  const track = getTrackByFile(file);
   if (!track) return c.json({ ok: false, error: "Track not found" }, 404);
   return c.json({ ok: true, data: track });
 });
 
-app.delete("/api/library/:file", (c) => {
-  const file = c.req.param("file");
+app.delete("/api/library/track", (c) => {
+  const file = c.req.query("file");
+  if (!file) return c.json({ ok: false, error: "file query param required" }, 400);
   const deleted = deleteTrack(file);
   if (!deleted) return c.json({ ok: false, error: "File not found or could not delete" }, 404);
   return c.json({ ok: true, data: { deleted: file } });
 });
 
 app.post("/api/library/scan", (c) => {
-  initLibrary();
-  const stats = getLibraryStats();
+  const stats = scanLibrary();
   return c.json({ ok: true, data: stats });
 });
 
@@ -258,23 +258,19 @@ app.post("/api/stream/pause", async (c) => {
   }
 });
 
-app.get("/api/stream/skip", async (c) => {
+async function handleSkip(c: any) {
   try {
     await skipTrack();
-    return c.json({ ok: true, data: { action: "skip" } });
+    await new Promise((r) => setTimeout(r, 500));
+    const status = await getStreamStatus();
+    return c.json({ ok: true, data: { action: "skip", nowPlaying: status } });
   } catch (err: any) {
     return c.json({ ok: false, error: err.message }, 500);
   }
-});
+}
 
-app.post("/api/stream/skip", async (c) => {
-  try {
-    await skipTrack();
-    return c.json({ ok: true, data: { action: "skip" } });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
-});
+app.get("/api/stream/skip", handleSkip);
+app.post("/api/stream/skip", handleSkip);
 
 app.post("/api/stream/reload", async (c) => {
   try {
@@ -322,7 +318,34 @@ app.post("/api/stream/play/file", async (c) => {
     if (!file) return c.json({ ok: false, error: "file is required" }, 400);
     const ok = await playFileNow(file);
     if (!ok) return c.json({ ok: false, error: "Failed to queue track" }, 500);
-    return c.json({ ok: true, data: { action: "playfile", file } });
+    const st = await getStreamStatus();
+    return c.json({ ok: true, data: { action: "playfile", file, nowPlaying: st } });
+  } catch (err: any) {
+    return c.json({ ok: false, error: err.message }, 500);
+  }
+});
+
+app.post("/api/stream/play/url", async (c) => {
+  try {
+    const body = await c.req.json();
+    const { url } = body;
+    if (!url) return c.json({ ok: false, error: "url is required" }, 400);
+
+    const existing = getTrackByUrl(url);
+    if (existing) {
+      const ok = await playFileNow(`/music/${existing.file}`);
+      if (!ok) return c.json({ ok: false, error: "Failed to play track" }, 500);
+      const st = await getStreamStatus();
+      return c.json({ ok: true, data: { source: "library", track: existing, nowPlaying: st } });
+    }
+
+    const { downloadFromSpotify } = await import("./spotdl");
+    const job = await downloadFromSpotify(url, async (track) => {
+      const filepath = `/music/${track.file}`;
+      await sendCommand(`queue.push ${filepath}`);
+      await sendCommand("queue.flush_and_skip");
+    });
+    return c.json({ ok: true, data: { source: "download", job } });
   } catch (err: any) {
     return c.json({ ok: false, error: err.message }, 500);
   }

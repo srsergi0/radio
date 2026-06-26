@@ -243,7 +243,8 @@ export async function getStreamStatus() {
 
 export async function queuePush(filepath: string): Promise<string | null> {
   try {
-    const lines = await sendCommand(`queue.push ${filepath}`);
+    const uri = `file://${filepath.replace(/ /g, "%20")}`;
+    const lines = await sendCommand(`queue.push ${uri}`);
     const rid = lines[0]?.trim() || null;
     if (rid) lastQueuedRid = rid;
     return rid;
@@ -268,10 +269,12 @@ export async function queueClear(): Promise<void> {
 
 export async function playFileNow(filepath: string): Promise<boolean> {
   try {
+    await sendCommand("queue.clear");
+    await new Promise((r) => setTimeout(r, 200));
     const rid = await queuePush(filepath);
     if (!rid) return false;
-    await new Promise((r) => setTimeout(r, 500));
-    await sendCommand("queue.flush_and_skip");
+    await new Promise((r) => setTimeout(r, 1000));
+    await sendCommand("songs.skip");
     return true;
   } catch {
     return false;

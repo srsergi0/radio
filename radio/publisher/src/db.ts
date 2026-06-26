@@ -55,6 +55,22 @@ function createTables() {
   `);
 
   db.exec(`
+    CREATE TABLE IF NOT EXISTS library_tracks (
+      file TEXT PRIMARY KEY,
+      type TEXT NOT NULL DEFAULT 'song',
+      title TEXT NOT NULL,
+      artist TEXT DEFAULT '',
+      album TEXT DEFAULT '',
+      duration REAL NOT NULL DEFAULT 0,
+      added_at TEXT NOT NULL DEFAULT (datetime('now')),
+      size INTEGER DEFAULT 0,
+      mtime TEXT DEFAULT ''
+    )
+  `);
+  // Add columns that might not exist in older DBs
+  try { db.exec("ALTER TABLE library_tracks ADD COLUMN spotify_url TEXT DEFAULT ''"); } catch {}
+
+  db.exec(`
     CREATE TABLE IF NOT EXISTS downloads (
       id TEXT PRIMARY KEY,
       url TEXT NOT NULL,
@@ -311,3 +327,110 @@ export function getAllDownloads(): DownloadJob[] {
 export function clearDownloads() {
   getDB().run("DELETE FROM downloads");
 }
+
+// ============================================================
+// LIBRARY
+// ============================================================
+
+function fileToId(file: string): string {
+  let hash = 0;
+  for (let i = 0; i < file.length; i++) {
+    hash = ((hash << 5) - hash) + file.charCodeAt(i);
+    hash |= 0;
+  }
+  return `lib_${Math.abs(hash).toString(36)}`;
+}
+
+export function getLibraryTrackByUrl(spotifyUrl: string): Track | null {
+  const row = getDB().query("SELECT * FROM library_tracks WHERE spotify_url = ?").get(spotifyUrl) as any;
+  if (!row) return null;
+  return {
+    id: fileToId(row.file),
+    type: row.type,
+    file: row.file,
+    title: row.title,
+    artist: row.artist || undefined,
+    album: row.album || undefined,
+    duration: row.duration,
+    spotifyUrl: row.spotify_url || undefined,
+    addedAt: row.added_at,
+  };
+}
+
+export function getLibraryTrack(file: string): Track | null {
+  const row = getDB().query("SELECT * FROM library_tracks WHERE file = ?").get(file) as any;
+  if (!row) return null;
+  return {
+    id: fileToId(row.file),
+    type: row.type,
+    file: row.file,
+    title: row.title,
+    artist: row.artist || undefined,
+    album: row.album || undefined,
+    duration: row.duration,
+    spotifyUrl: row.spotify_url || undefined,
+    addedAt: row.added_at,
+  };
+}
+
+export function getAllLibraryTracks(type?: string): Track[] {
+  let rows: any[];
+  if (type) {
+    rows = getDB().query("SELECT * FROM library_tracks WHERE type = ? ORDER BY file").all(type) as any[];
+  } else {
+    rows = getDB().query("SELECT * FROM library_tracks ORDER BY file").all() as any[];
+  }
+  return rows.map((r: any) => ({
+    id: fileToId(r.file),
+    type: r.type,
+    file: r.file,
+    title: r.title,
+    artist: r.artist || undefined,
+    album: r.album || undefined,
+    duration: r.duration,
+    spotifyUrl: r.spotify_url || undefined,
+    addedAt: r.added_at,
+  }));
+}
+
+export function upsertLibraryTrack(track: {
+  file: string;
+  type: string;
+  title: string;
+  artist?: string;
+  album?: string;
+  duration: number;
+  spotify_url?: string;
+  size: number;
+  mtime: string;
+}) {
+  getDB().run(
+    `INSERT OR REPLACE INTO library_tracks (file, type, title, artist, album, duration, spotify_url, added_at, size, mtime)
+     VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT added_at FROM library_tracks WHERE file = ?), datetime('now')), ?, ?)`,
+    track.file, track.type, track.title, track.artist || "", track.album || "",
+    track.duration, track.spotify_url || "", track.file, track.size, track.mtime
+  );
+}
+
+export function removeLibraryTrack(file: string) {
+  getDB().run("DELETE FROM library_tracks WHERE file = ?", file);
+}
+
+export function getLibraryStats() {
+  const d = getDB();
+  const stats = d.query(`
+    SELECT
+      COUNT(*) FILTER (WHERE type = 'song') as total_songs,
+      COUNT(*) FILTER (WHERE type = 'interludio') as total_interludios,
+      COALESCE(SUM(size), 0) as total_size,
+      COALESCE(SUM(duration), 0) as total_duration
+    FROM library_tracks
+  `).get() as any;
+  return {
+    totalSongs: stats.total_songs,
+    totalInterludios: stats.total_interludios,
+    totalSizeBytes: stats.total_size,
+    totalDurationSeconds: stats.total_duration,
+  };
+}
+
