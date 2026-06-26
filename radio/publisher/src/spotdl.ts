@@ -1,38 +1,17 @@
 import { spawn, type ChildProcess } from "child_process";
-import { readdirSync, statSync, existsSync } from "fs";
+import { readdirSync, statSync } from "fs";
 import { join, basename, extname } from "path";
 import type { Track, DownloadJob } from "./types";
+import { createDownload, updateDownload, getDownload, getAllDownloads as dbGetAll, clearDownloads as dbClear } from "./db";
 
 const MUSIC_DIR = process.env.MUSIC_DIR || "/app/music";
 const SONGS_DIR = join(MUSIC_DIR, "songs");
 const SPOTDL_HOST = process.env.SPOTDL_HOST;
 
-const downloads = new Map<string, DownloadJob>();
 const activeProcesses = new Map<string, ChildProcess>();
 
-function generateId(): string {
-  return `dl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function getAudioDuration(filePath: string): number {
-  try {
-    const stat = statSync(filePath);
-    return Math.floor(stat.size / (192 * 1000 / 8));
-  } catch {
-    return 0;
-  }
-}
-
 export async function downloadFromSpotify(url: string): Promise<DownloadJob> {
-  const jobId = generateId();
-  const job: DownloadJob = {
-    id: jobId,
-    url,
-    status: "downloading",
-    startedAt: new Date().toISOString(),
-  };
-  downloads.set(jobId, job);
-
+  const job = createDownload(url);
   console.log(`[spotdl] Starting download: ${url}`);
 
   return new Promise((resolve) => {
@@ -44,7 +23,7 @@ export async function downloadFromSpotify(url: string): Promise<DownloadJob> {
       stdio: ["ignore", "pipe", "pipe"],
     });
 
-    activeProcesses.set(jobId, proc);
+    activeProcesses.set(job.id, proc);
 
     let stderr = "";
 
@@ -57,7 +36,7 @@ export async function downloadFromSpotify(url: string): Promise<DownloadJob> {
     });
 
     proc.on("close", (code) => {
-      activeProcesses.delete(jobId);
+      activeProcesses.delete(job.id);
 
       if (code === 0) {
         const files = readdirSync(SONGS_DIR)
@@ -76,50 +55,63 @@ export async function downloadFromSpotify(url: string): Promise<DownloadJob> {
           const name = basename(latestFile, extname(latestFile));
 
           const track: Track = {
-            id: generateId(),
+            id: `lib_${Date.now()}`,
             type: "song",
             file: `songs/${latestFile}`,
             title: name,
-            duration: getAudioDuration(filePath),
+            duration: Math.floor(statSync(filePath).size / (192 * 1000 / 8)),
             spotifyUrl: url,
             addedAt: new Date().toISOString(),
           };
+
+          updateDownload(job.id, {
+            status: "done",
+            result: track,
+            completedAt: new Date().toISOString(),
+          });
 
           job.status = "done";
           job.result = track;
           job.completedAt = new Date().toISOString();
           console.log(`[spotdl] Download complete: ${track.title}`);
         } else {
+          updateDownload(job.id, { status: "error", error: "No file found after download", completedAt: new Date().toISOString() });
           job.status = "error";
           job.error = "No file found after download";
         }
       } else {
+        updateDownload(job.id, { status: "error", error: stderr || `Exit code ${code}`, completedAt: new Date().toISOString() });
         job.status = "error";
         job.error = stderr || `Exit code ${code}`;
         job.completedAt = new Date().toISOString();
         console.error(`[spotdl] Download failed: ${job.error}`);
       }
 
-      resolve(job);
+      resolve(loadJob(job.id));
     });
 
     proc.on("error", (err) => {
-      activeProcesses.delete(jobId);
+      activeProcesses.delete(job.id);
+      updateDownload(job.id, { status: "error", error: err.message, completedAt: new Date().toISOString() });
       job.status = "error";
       job.error = err.message;
       job.completedAt = new Date().toISOString();
       console.error(`[spotdl] Process error: ${err.message}`);
-      resolve(job);
+      resolve(loadJob(job.id));
     });
   });
 }
 
-export function getDownloadJob(id: string): DownloadJob | undefined {
-  return downloads.get(id);
+function loadJob(id: string): DownloadJob {
+  return getDownload(id) || { id, url: "", status: "error", error: "Not found", startedAt: new Date().toISOString() };
+}
+
+export function getDownloadJob(id: string): DownloadJob | null {
+  return getDownload(id);
 }
 
 export function getAllDownloads(): DownloadJob[] {
-  return Array.from(downloads.values());
+  return dbGetAll();
 }
 
 export function cancelDownload(id: string): boolean {
@@ -127,12 +119,7 @@ export function cancelDownload(id: string): boolean {
   if (proc) {
     proc.kill("SIGTERM");
     activeProcesses.delete(id);
-    const job = downloads.get(id);
-    if (job) {
-      job.status = "error";
-      job.error = "Cancelled by user";
-      job.completedAt = new Date().toISOString();
-    }
+    updateDownload(id, { status: "error", error: "Cancelled by user", completedAt: new Date().toISOString() });
     return true;
   }
   return false;
@@ -142,5 +129,5 @@ export function clearDownloads(): void {
   for (const [id] of activeProcesses) {
     cancelDownload(id);
   }
-  downloads.clear();
+  dbClear();
 }

@@ -3,7 +3,7 @@ import { cors } from "hono/cors";
 import { loadTimeline, saveTimeline, addTrack, insertTrack, updateTrack, removeTrack, reorderTracks, setCurrentIndex, clearTimeline, getCurrentTrack, getTrackById } from "./playlist";
 import { initLibrary, listSongs, listInterludios, deleteTrack, getLibraryStats } from "./library";
 import { downloadFromSpotify, getDownloadJob, getAllDownloads, cancelDownload, clearDownloads } from "./spotdl";
-import { skipTrack, pausePlayback, startPlayback, getStreamStatus, reloadPlaylist, isLiquidsoapConnected, queuePush, queueList, queueClear, playFileNow } from "./liquidsoap";
+import { skipTrack, pausePlayback, startPlayback, getStreamStatus, reloadPlaylist, isLiquidsoapConnected, queuePush, queueList, queueClear, playFileNow, queueLength } from "./liquidsoap";
 import { loadConfig, updateConfig } from "./config";
 import type { Track } from "./types";
 

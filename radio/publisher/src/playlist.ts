@@ -1,136 +1,84 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
-import { dirname } from "path";
-import type { Timeline, Track } from "./types";
+import { loadTimelineMeta, saveTimelineMeta, loadTracks, addTrack as dbAddTrack, insertTrack as dbInsertTrack, updateTrack as dbUpdateTrack, removeTrack as dbRemoveTrack, reorderTracks as dbReorder, clearTimeline as dbClear, getTrackById as dbGetById, getDB } from "./db";
+import type { Track } from "./types";
 
-const DATA_DIR = process.env.DATA_DIR || "/app/data";
-const TIMELINE_PATH = process.env.TIMELINE_PATH || `${DATA_DIR}/timeline.json`;
-
-const DEFAULT_TIMELINE: Timeline = {
-  tracks: [],
-  currentIndex: 0,
-  isPlaying: false,
-  updatedAt: new Date().toISOString(),
-};
-
-function ensureDir(): void {
-  const dir = dirname(TIMELINE_PATH);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+export function loadTimeline() {
+  const meta = loadTimelineMeta();
+  const tracks = loadTracks();
+  return { tracks, ...meta };
 }
 
-export function loadTimeline(): Timeline {
-  ensureDir();
-  if (!existsSync(TIMELINE_PATH)) {
-    saveTimeline(DEFAULT_TIMELINE);
-    return { ...DEFAULT_TIMELINE };
+export function saveTimeline(data: { tracks?: Track[]; currentIndex?: number; isPlaying?: boolean }) {
+  const d = getDB();
+  if (data.tracks) {
+    d.transaction(() => {
+      d.run("DELETE FROM timeline_tracks");
+      const insert = d.prepare("INSERT INTO timeline_tracks (id, pos, type, file, title, artist, album, duration, spotify_url, added_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+      data.tracks.forEach((t, i) => insert.run(t.id, i, t.type, t.file, t.title, t.artist || "", t.album || "", t.duration, t.spotifyUrl || "", t.addedAt));
+    })();
   }
-  try {
-    const data = readFileSync(TIMELINE_PATH, "utf-8");
-    return JSON.parse(data);
-  } catch {
-    return { ...DEFAULT_TIMELINE };
-  }
+  const meta = loadTimelineMeta();
+  saveTimelineMeta(data.currentIndex ?? meta.currentIndex, data.isPlaying ?? meta.isPlaying);
+  return loadTimeline();
 }
 
-export function saveTimeline(timeline: Timeline): void {
-  ensureDir();
-  timeline.updatedAt = new Date().toISOString();
-  writeFileSync(TIMELINE_PATH, JSON.stringify(timeline, null, 2));
+export function addTrack(track: Track) {
+  const tracks = dbAddTrack(track);
+  const meta = loadTimelineMeta();
+  return { tracks, ...meta };
 }
 
-export function addTrack(track: Track): Timeline {
-  const timeline = loadTimeline();
-  timeline.tracks.push(track);
-  saveTimeline(timeline);
-  return timeline;
-}
-
-export function insertTrack(index: number, track: Track): Timeline {
-  const timeline = loadTimeline();
-  const safeIndex = Math.max(0, Math.min(index, timeline.tracks.length));
-  timeline.tracks.splice(safeIndex, 0, track);
-  saveTimeline(timeline);
-  return timeline;
+export function insertTrack(index: number, track: Track) {
+  const tracks = dbInsertTrack(index, track);
+  const meta = loadTimelineMeta();
+  return { tracks, ...meta };
 }
 
 export function updateTrack(id: string, updates: Partial<Track>): Track | null {
-  const timeline = loadTimeline();
-  const track = timeline.tracks.find((t) => t.id === id);
-  if (!track) return null;
-  Object.assign(track, updates, { id: track.id, file: track.file });
-  saveTimeline(timeline);
-  return track;
+  return dbUpdateTrack(id, updates);
 }
 
-export function removeTrack(id: string): Timeline {
-  const timeline = loadTimeline();
-  const index = timeline.tracks.findIndex((t) => t.id === id);
-  if (index !== -1) {
-    timeline.tracks.splice(index, 1);
-    if (timeline.currentIndex >= timeline.tracks.length) {
-      timeline.currentIndex = Math.max(0, timeline.tracks.length - 1);
-    } else if (index < timeline.currentIndex) {
-      timeline.currentIndex--;
-    }
-  }
-  saveTimeline(timeline);
-  return timeline;
+export function removeTrack(id: string) {
+  const tracks = dbRemoveTrack(id);
+  const meta = loadTimelineMeta();
+  return { tracks, ...meta };
 }
 
-export function reorderTracks(fromIndex: number, toIndex: number): Timeline {
-  const timeline = loadTimeline();
-  if (fromIndex < 0 || fromIndex >= timeline.tracks.length) return timeline;
-  if (toIndex < 0 || toIndex >= timeline.tracks.length) return timeline;
-
-  const [moved] = timeline.tracks.splice(fromIndex, 1);
-  timeline.tracks.splice(toIndex, 0, moved);
-
-  if (timeline.currentIndex === fromIndex) {
-    timeline.currentIndex = toIndex;
-  } else if (fromIndex < timeline.currentIndex && toIndex >= timeline.currentIndex) {
-    timeline.currentIndex--;
-  } else if (fromIndex > timeline.currentIndex && toIndex <= timeline.currentIndex) {
-    timeline.currentIndex++;
-  }
-
-  saveTimeline(timeline);
-  return timeline;
+export function reorderTracks(fromIndex: number, toIndex: number) {
+  const tracks = dbReorder(fromIndex, toIndex);
+  const meta = loadTimelineMeta();
+  return { tracks, ...meta };
 }
 
-export function setCurrentIndex(index: number): Timeline {
-  const timeline = loadTimeline();
-  if (index >= 0 && index < timeline.tracks.length) {
-    timeline.currentIndex = index;
-  }
-  saveTimeline(timeline);
-  return timeline;
+export function setCurrentIndex(index: number) {
+  const meta = loadTimelineMeta();
+  const tracks = loadTracks();
+  const safeIndex = Math.max(0, Math.min(index, tracks.length - 1));
+  saveTimelineMeta(safeIndex, meta.isPlaying);
+  return { tracks, currentIndex: safeIndex, isPlaying: meta.isPlaying, updatedAt: new Date().toISOString() };
 }
 
-export function clearTimeline(): Timeline {
-  const timeline: Timeline = {
-    tracks: [],
-    currentIndex: 0,
-    isPlaying: false,
-    updatedAt: new Date().toISOString(),
-  };
-  saveTimeline(timeline);
-  return timeline;
+export function clearTimeline() {
+  dbClear();
+  saveTimelineMeta(0, false);
+  return { tracks: [] as Track[], currentIndex: 0, isPlaying: false, updatedAt: new Date().toISOString() };
 }
 
 export function getCurrentTrack(): Track | null {
-  const timeline = loadTimeline();
-  if (timeline.tracks.length === 0) return null;
-  return timeline.tracks[timeline.currentIndex] || null;
+  const meta = loadTimelineMeta();
+  const tracks = loadTracks();
+  if (tracks.length === 0) return null;
+  return tracks[meta.currentIndex] || null;
 }
 
 export function getTrackById(id: string): Track | null {
-  const timeline = loadTimeline();
-  return timeline.tracks.find((t) => t.id === id) || null;
+  return dbGetById(id);
 }
 
 export function nextTrack(): Track | null {
-  const timeline = loadTimeline();
-  if (timeline.tracks.length === 0) return null;
-  timeline.currentIndex = (timeline.currentIndex + 1) % timeline.tracks.length;
-  saveTimeline(timeline);
-  return timeline.tracks[timeline.currentIndex];
+  const meta = loadTimelineMeta();
+  const tracks = loadTracks();
+  if (tracks.length === 0) return null;
+  const nextIdx = (meta.currentIndex + 1) % tracks.length;
+  saveTimelineMeta(nextIdx, meta.isPlaying);
+  return tracks[nextIdx];
 }
