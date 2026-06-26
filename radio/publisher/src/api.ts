@@ -3,7 +3,7 @@ import { cors } from "hono/cors";
 import { loadTimeline, saveTimeline, addTrack, insertTrack, updateTrack, removeTrack, reorderTracks, setCurrentIndex, clearTimeline, getCurrentTrack, getTrackById } from "./playlist";
 import { initLibrary, listSongs, listInterludios, deleteTrack, getLibraryStats } from "./library";
 import { downloadFromSpotify, getDownloadJob, getAllDownloads, cancelDownload, clearDownloads } from "./spotdl";
-import { skipTrack, pausePlayback, startPlayback, getStreamStatus, reloadPlaylist, isLiquidsoapConnected } from "./liquidsoap";
+import { skipTrack, pausePlayback, startPlayback, getStreamStatus, reloadPlaylist, isLiquidsoapConnected, queuePush, queueList, queueClear, playFileNow } from "./liquidsoap";
 import { loadConfig, updateConfig } from "./config";
 import type { Track } from "./types";
 
@@ -83,6 +83,18 @@ app.post("/api/library/scan", (c) => {
   initLibrary();
   const stats = getLibraryStats();
   return c.json({ ok: true, data: stats });
+});
+
+app.post("/api/library/:id/play", async (c) => {
+  const id = c.req.param("id");
+  const allTracks = [...listSongs(), ...listInterludios()];
+  console.log("[library/play] id:", id, "total tracks:", allTracks.length);
+  const track = allTracks.find((t) => t.id === id);
+  if (!track) return c.json({ ok: false, error: "Track not found" }, 404);
+  const filepath = `/music/${track.file}`;
+  const ok = await playFileNow(filepath);
+  if (!ok) return c.json({ ok: false, error: "Failed to play track" }, 500);
+  return c.json({ ok: true, data: { action: "play", track } });
 });
 
 // ============================================================
@@ -259,6 +271,49 @@ app.post("/api/stream/reload", async (c) => {
   try {
     await reloadPlaylist();
     return c.json({ ok: true, data: { action: "reload" } });
+  } catch (err: any) {
+    return c.json({ ok: false, error: err.message }, 500);
+  }
+});
+
+app.post("/api/stream/queue", async (c) => {
+  try {
+    const body = await c.req.json();
+    const { file } = body;
+    if (!file) return c.json({ ok: false, error: "file is required" }, 400);
+    const rid = await queuePush(file);
+    return c.json({ ok: true, data: { rid, file } });
+  } catch (err: any) {
+    return c.json({ ok: false, error: err.message }, 500);
+  }
+});
+
+app.get("/api/stream/queue", async (c) => {
+  try {
+    const items = await queueList();
+    return c.json({ ok: true, data: items });
+  } catch (err: any) {
+    return c.json({ ok: false, error: err.message }, 500);
+  }
+});
+
+app.delete("/api/stream/queue", async (c) => {
+  try {
+    await queueClear();
+    return c.json({ ok: true, data: { cleared: true } });
+  } catch (err: any) {
+    return c.json({ ok: false, error: err.message }, 500);
+  }
+});
+
+app.post("/api/stream/play/file", async (c) => {
+  try {
+    const body = await c.req.json();
+    const { file } = body;
+    if (!file) return c.json({ ok: false, error: "file is required" }, 400);
+    const ok = await playFileNow(file);
+    if (!ok) return c.json({ ok: false, error: "Failed to queue track" }, 500);
+    return c.json({ ok: true, data: { action: "playfile", file } });
   } catch (err: any) {
     return c.json({ ok: false, error: err.message }, 500);
   }

@@ -11,6 +11,7 @@ let commandQueue: Array<{ resolve: (lines: string[]) => void; reject: (reason: a
 let currentLines: string[] = [];
 let durationCache = new Map<string, { duration: number; cachedAt: number }>();
 const DURATION_CACHE_TTL = 3600000;
+let lastQueuedRid: string | null = null;
 
 function connect() {
   if (socket) return;
@@ -114,8 +115,20 @@ export async function startPlayback(): Promise<void> {
 export async function getCurrentRequestId(): Promise<string | null> {
   try {
     const lines = await sendCommand("request.on_air");
-    const rid = lines[0]?.trim();
-    return rid && rid !== "" ? rid : null;
+    const allRids: string[] = [];
+    for (const line of lines) {
+      for (const part of line.trim().split(/\s+/)) {
+        if (part !== "") allRids.push(part);
+      }
+    }
+    if (allRids.length === 0) return null;
+    // Return the highest RID (most recent)
+    const sorted = allRids.sort((a, b) => parseInt(b) - parseInt(a));
+    const rid = sorted[0];
+    if (lastQueuedRid && rid !== lastQueuedRid) {
+      lastQueuedRid = null;
+    }
+    return rid;
   } catch {
     return null;
   }
@@ -229,6 +242,44 @@ export async function getStreamStatus() {
       duration: 0,
       elapsed: 0,
     };
+  }
+}
+
+export async function queuePush(filepath: string): Promise<string | null> {
+  try {
+    const escaped = filepath.includes(" ") ? `"${filepath}"` : filepath;
+    const lines = await sendCommand(`queue.push ${escaped}`);
+    const rid = lines[0]?.trim() || null;
+    if (rid) lastQueuedRid = rid;
+    return rid;
+  } catch {
+    return null;
+  }
+}
+
+export async function queueList(): Promise<string[]> {
+  try {
+    const lines = await sendCommand("queue.queue");
+    return lines;
+  } catch {
+    return [];
+  }
+}
+
+export async function queueClear(): Promise<void> {
+  try {
+    await sendCommand("queue.clear");
+  } catch {}
+}
+
+export async function playFileNow(filepath: string): Promise<boolean> {
+  try {
+    const rid = await queuePush(filepath);
+    if (!rid) return false;
+    await skipTrack();
+    return true;
+  } catch {
+    return false;
   }
 }
 

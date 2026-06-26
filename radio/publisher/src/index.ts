@@ -79,6 +79,11 @@ console.log(`  POST /api/stream/play`);
 console.log(`  POST /api/stream/pause`);
 console.log(`  POST /api/stream/skip`);
 console.log(`  POST /api/stream/reload`);
+console.log(`  POST /api/stream/queue`);
+console.log(`  GET  /api/stream/queue`);
+console.log(`  DEL  /api/stream/queue`);
+console.log(`  POST /api/stream/play/file`);
+console.log(`  POST /api/library/:id/play`);
 
 initLibrary();
 initLiquidsoap();
