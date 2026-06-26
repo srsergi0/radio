@@ -57,6 +57,24 @@ services:
     networks:
       - radio-net
 
+  ftp:
+    image: stilliard/pure-ftpd:hardened
+    container_name: radio-ftp
+    restart: unless-stopped
+    ports:
+      - "21:21"
+      - "30000-30009:30000-30009"
+    volumes:
+      - ./music/songs:/home/radio/music/songs
+      - ./music/interludios:/home/radio/music/interludios
+    environment:
+      - PUBLICHOST=localhost
+      - FTP_USER_NAME=radio
+      - FTP_USER_PASS=radiobloom
+      - FTP_USER_HOME=/home/radio
+    networks:
+      - radio-net
+
 networks:
   radio-net:
     driver: bridge
