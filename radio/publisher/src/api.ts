@@ -1,10 +1,8 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { loadTimeline, saveTimeline, addTrack, insertTrack, updateTrack, removeTrack, reorderTracks, setCurrentIndex, clearTimeline, getCurrentTrack, getTrackById } from "./playlist";
 import { listSongs, listInterludios, deleteTrack, getLibraryStats, scanLibrary, getTrackByUrl } from "./library";
 import { skipTrack, pausePlayback, startPlayback, getStreamStatus, reloadPlaylist, isLiquidsoapConnected, queuePush, queueList, queueClear, playFileNow, queueLength, sendCommand } from "./liquidsoap";
 import { loadConfig, updateConfig } from "./config";
-import type { Track } from "./types";
 
 const app = new Hono();
 
@@ -94,104 +92,6 @@ app.post("/api/library/:id/play", async (c) => {
   const ok = await playFileNow(filepath);
   if (!ok) return c.json({ ok: false, error: "Failed to play track" }, 500);
   return c.json({ ok: true, data: { action: "play", track } });
-});
-
-// ============================================================
-// TIMELINE / SCHEDULE
-// ============================================================
-
-app.get("/api/timeline", (c) => {
-  const timeline = loadTimeline();
-  return c.json({ ok: true, data: timeline });
-});
-
-app.get("/api/timeline/current", (c) => {
-  const track = getCurrentTrack();
-  return c.json({ ok: true, data: track });
-});
-
-app.get("/api/timeline/:trackId", (c) => {
-  const id = c.req.param("trackId");
-  const track = getTrackById(id);
-  if (!track) return c.json({ ok: false, error: "Track not found" }, 404);
-  return c.json({ ok: true, data: track });
-});
-
-app.post("/api/timeline", async (c) => {
-  const body = await c.req.json();
-  const timeline = loadTimeline();
-  if (body.tracks) timeline.tracks = body.tracks;
-  if (typeof body.currentIndex === "number") timeline.currentIndex = body.currentIndex;
-  if (typeof body.isPlaying === "boolean") timeline.isPlaying = body.isPlaying;
-  saveTimeline(timeline);
-  return c.json({ ok: true, data: timeline });
-});
-
-app.post("/api/timeline/tracks", async (c) => {
-  const body = await c.req.json();
-  const track: Track = body;
-  if (!track.file || !track.title) {
-    return c.json({ ok: false, error: "file and title are required" }, 400);
-  }
-  if (!track.id) track.id = `tl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  if (!track.addedAt) track.addedAt = new Date().toISOString();
-  if (!track.type) track.type = "song";
-  if (!track.duration) track.duration = 0;
-  const timeline = addTrack(track);
-  return c.json({ ok: true, data: timeline });
-});
-
-app.post("/api/timeline/tracks/insert", async (c) => {
-  const body = await c.req.json();
-  const { index, track } = body;
-  if (typeof index !== "number" || !track) {
-    return c.json({ ok: false, error: "index and track are required" }, 400);
-  }
-  if (!track.id) track.id = `tl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  if (!track.addedAt) track.addedAt = new Date().toISOString();
-  if (!track.type) track.type = "song";
-  if (!track.duration) track.duration = 0;
-  const timeline = insertTrack(index, track);
-  return c.json({ ok: true, data: timeline });
-});
-
-app.put("/api/timeline/tracks/:trackId", async (c) => {
-  const id = c.req.param("trackId");
-  const updates = await c.req.json();
-  const track = updateTrack(id, updates);
-  if (!track) return c.json({ ok: false, error: "Track not found" }, 404);
-  return c.json({ ok: true, data: track });
-});
-
-app.delete("/api/timeline/tracks/:trackId", (c) => {
-  const id = c.req.param("trackId");
-  const timeline = removeTrack(id);
-  return c.json({ ok: true, data: timeline });
-});
-
-app.post("/api/timeline/tracks/reorder", async (c) => {
-  const body = await c.req.json();
-  const { fromIndex, toIndex } = body;
-  if (typeof fromIndex !== "number" || typeof toIndex !== "number") {
-    return c.json({ ok: false, error: "fromIndex and toIndex are required" }, 400);
-  }
-  const timeline = reorderTracks(fromIndex, toIndex);
-  return c.json({ ok: true, data: timeline });
-});
-
-app.post("/api/timeline/tracks/clear", (c) => {
-  const timeline = clearTimeline();
-  return c.json({ ok: true, data: timeline });
-});
-
-app.post("/api/timeline/play", async (c) => {
-  const body = await c.req.json();
-  const { index } = body;
-  if (typeof index !== "number") {
-    return c.json({ ok: false, error: "index is required" }, 400);
-  }
-  const timeline = setCurrentIndex(index);
-  return c.json({ ok: true, data: timeline });
 });
 
 // ============================================================
