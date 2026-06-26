@@ -283,8 +283,6 @@ export async function queueClear(): Promise<void> {
 
 export async function playFileNow(filepath: string): Promise<boolean> {
   try {
-    await sendCommand("queue.clear");
-    await new Promise((r) => setTimeout(r, 200));
     const rid = await queuePush(filepath);
     if (!rid) return false;
     await new Promise((r) => setTimeout(r, 1000));

@@ -1,8 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { loadTimeline, saveTimeline, addTrack, insertTrack, updateTrack, removeTrack, reorderTracks, setCurrentIndex, clearTimeline, getCurrentTrack, getTrackById } from "./playlist";
-import { initLibrary, listSongs, listInterludios, deleteTrack, getLibraryStats, scanLibrary, getTrackByFile, getTrackByUrl } from "./library";
-import { downloadFromSpotify, getDownloadJob, getAllDownloads, cancelDownload, clearDownloads } from "./spotdl";
+import { listSongs, listInterludios, deleteTrack, getLibraryStats, scanLibrary, getTrackByUrl } from "./library";
 import { skipTrack, pausePlayback, startPlayback, getStreamStatus, reloadPlaylist, isLiquidsoapConnected, queuePush, queueList, queueClear, playFileNow, queueLength, sendCommand } from "./liquidsoap";
 import { loadConfig, updateConfig } from "./config";
 import type { Track } from "./types";
@@ -196,42 +195,6 @@ app.post("/api/timeline/play", async (c) => {
 });
 
 // ============================================================
-// DOWNLOADS (spotDL)
-// ============================================================
-
-app.post("/api/downloads", async (c) => {
-  const body = await c.req.json();
-  const { url } = body;
-  if (!url) return c.json({ ok: false, error: "url is required" }, 400);
-
-  const job = await downloadFromSpotify(url);
-  return c.json({ ok: true, data: job });
-});
-
-app.get("/api/downloads", (c) => {
-  return c.json({ ok: true, data: getAllDownloads() });
-});
-
-app.get("/api/downloads/:id", (c) => {
-  const id = c.req.param("id");
-  const job = getDownloadJob(id);
-  if (!job) return c.json({ ok: false, error: "Download not found" }, 404);
-  return c.json({ ok: true, data: job });
-});
-
-app.delete("/api/downloads/:id", (c) => {
-  const id = c.req.param("id");
-  const cancelled = cancelDownload(id);
-  if (!cancelled) return c.json({ ok: false, error: "Download not found or already finished" }, 404);
-  return c.json({ ok: true, data: { cancelled: id } });
-});
-
-app.delete("/api/downloads", (c) => {
-  clearDownloads();
-  return c.json({ ok: true, data: { cleared: true } });
-});
-
-// ============================================================
 // STREAM CONTROL (Liquidsoap)
 // ============================================================
 
@@ -284,10 +247,24 @@ app.post("/api/stream/reload", async (c) => {
 app.post("/api/stream/queue", async (c) => {
   try {
     const body = await c.req.json();
-    const { file } = body;
-    if (!file) return c.json({ ok: false, error: "file is required" }, 400);
-    const rid = await queuePush(file);
-    return c.json({ ok: true, data: { rid, file } });
+    const { url } = body;
+    if (!url) return c.json({ ok: false, error: "url is required" }, 400);
+
+    const existing = getTrackByUrl(url);
+    if (!existing) {
+      const { downloadFromSpotify } = await import("./spotdl");
+      const job = await downloadFromSpotify(url, async (track) => {
+        const filepath = `/music/${track.file}`;
+        await queuePush(filepath);
+      });
+      const list = await queueList();
+      return c.json({ ok: true, data: { source: "download", job, queue: list } });
+    }
+
+    const filepath = `/music/${existing.file}`;
+    const rid = await queuePush(filepath);
+    const list = await queueList();
+    return c.json({ ok: true, data: { source: "library", rid, track: existing, queue: list } });
   } catch (err: any) {
     return c.json({ ok: false, error: err.message }, 500);
   }
@@ -311,20 +288,6 @@ app.delete("/api/stream/queue", async (c) => {
   }
 });
 
-app.post("/api/stream/play/file", async (c) => {
-  try {
-    const body = await c.req.json();
-    const { file } = body;
-    if (!file) return c.json({ ok: false, error: "file is required" }, 400);
-    const ok = await playFileNow(file);
-    if (!ok) return c.json({ ok: false, error: "Failed to queue track" }, 500);
-    const st = await getStreamStatus();
-    return c.json({ ok: true, data: { action: "playfile", file, nowPlaying: st } });
-  } catch (err: any) {
-    return c.json({ ok: false, error: err.message }, 500);
-  }
-});
-
 app.post("/api/stream/play/url", async (c) => {
   try {
     const body = await c.req.json();
@@ -333,17 +296,22 @@ app.post("/api/stream/play/url", async (c) => {
 
     const existing = getTrackByUrl(url);
     if (existing) {
-      const ok = await playFileNow(`/music/${existing.file}`);
-      if (!ok) return c.json({ ok: false, error: "Failed to play track" }, 500);
+      const filepath = `/music/${existing.file}`;
+      await sendCommand("queue.flush_and_skip");
+      await new Promise((r) => setTimeout(r, 500));
+      const rid = await queuePush(filepath);
+      if (!rid) return c.json({ ok: false, error: "Failed to queue" }, 500);
       const st = await getStreamStatus();
-      return c.json({ ok: true, data: { source: "library", track: existing, nowPlaying: st } });
+      const list = await queueList();
+      return c.json({ ok: true, data: { source: "library", track: existing, nowPlaying: st, queue: list } });
     }
 
     const { downloadFromSpotify } = await import("./spotdl");
     const job = await downloadFromSpotify(url, async (track) => {
       const filepath = `/music/${track.file}`;
-      await sendCommand(`queue.push ${filepath}`);
-      await sendCommand("queue.flush_and_skip");
+      await sendCommand("queue.flush_and_skip").catch(() => {});
+      await new Promise((r) => setTimeout(r, 500));
+      await queuePush(filepath).catch(() => {});
     });
     return c.json({ ok: true, data: { source: "download", job } });
   } catch (err: any) {
