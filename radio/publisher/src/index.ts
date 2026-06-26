@@ -1,6 +1,6 @@
 import api from "./api";
-import { initLiquidsoap } from "./liquidsoap";
-import { initLibrary } from "./library";
+import { initLiquidsoap, queuePush, queueLength } from "./liquidsoap";
+import { initLibrary, listSongs } from "./library";
 import { initDB } from "./db";
 
 const PORT = parseInt(process.env.PORT || "3000");
@@ -85,9 +85,32 @@ console.log(`  POST /api/stream/queue`);
 console.log(`  GET  /api/stream/queue`);
 console.log(`  DEL  /api/stream/queue`);
 console.log(`  POST /api/stream/play/file`);
+console.log(`  POST /api/stream/play/url`);
 console.log(`  POST /api/library/:id/play`);
 
+const QUEUE_REFILL_TARGET = 10;
+const QUEUE_REFILL_MIN = 3;
+
+async function refillQueue() {
+  try {
+    const len = await queueLength();
+    if (len >= QUEUE_REFILL_MIN) return;
+    const songs = listSongs();
+    const shuffled = songs.sort(() => Math.random() - 0.5);
+    const toPush = shuffled.slice(0, QUEUE_REFILL_TARGET);
+    for (const song of toPush) {
+      const filepath = `/music/${song.file}`;
+      await queuePush(filepath).catch(() => {});
+    }
+    console.log(`[queue] Refilled: ${toPush.length} tracks from DB (queue had ${len})`);
+  } catch {}
+}
+
+initDB();
 initLibrary();
 initLiquidsoap();
+
+setTimeout(refillQueue, 3000);
+setInterval(refillQueue, 30000);
 
 console.log(`[server] Radio Bloom ready`);

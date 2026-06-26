@@ -87,11 +87,13 @@ function ensureConnected() {
 }
 
 export async function skipTrack(): Promise<void> {
-  try {
-    await sendCommand("queue.flush_and_skip");
-  } catch {
-    await sendCommand("queue.skip");
-  }
+  await sendCommand("queue.flush_and_skip");
+}
+
+export async function clearAndPush(filepath: string): Promise<string | null> {
+  await sendCommand("queue.clear");
+  await new Promise((r) => setTimeout(r, 200));
+  return queuePush(filepath);
 }
 
 export async function queueLength(): Promise<number> {
@@ -243,8 +245,7 @@ export async function getStreamStatus() {
 
 export async function queuePush(filepath: string): Promise<string | null> {
   try {
-    const uri = `file://${filepath.replace(/ /g, "%20")}`;
-    const lines = await sendCommand(`queue.push ${uri}`);
+    const lines = await sendCommand(`queue.push ${filepath}`);
     const rid = lines[0]?.trim() || null;
     if (rid) lastQueuedRid = rid;
     return rid;
@@ -274,7 +275,7 @@ export async function playFileNow(filepath: string): Promise<boolean> {
     const rid = await queuePush(filepath);
     if (!rid) return false;
     await new Promise((r) => setTimeout(r, 1000));
-    await sendCommand("songs.skip");
+    await sendCommand("queue.skip");
     return true;
   } catch {
     return false;
