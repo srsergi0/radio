@@ -1,4 +1,5 @@
 import { createConnection, type Socket } from "net";
+import { spawnSync } from "child_process";
 
 const LIQUIDSOAP_HOST = process.env.LIQUIDSOAP_HOST || "localhost";
 const LIQUIDSOAP_TELNET_PORT = parseInt(process.env.LIQUIDSOAP_TELNET_PORT || "1234");
@@ -8,6 +9,8 @@ let connected = false;
 let responseBuffer = "";
 let commandQueue: Array<{ resolve: (lines: string[]) => void; reject: (reason: any) => void }> = [];
 let currentLines: string[] = [];
+let durationCache = new Map<string, { duration: number; cachedAt: number }>();
+const DURATION_CACHE_TTL = 3600000;
 
 function connect() {
   if (socket) return;
@@ -126,7 +129,10 @@ export async function getRequestMetadata(rid: string): Promise<Record<string, st
       const eqIndex = line.indexOf("=");
       if (eqIndex > 0) {
         const key = line.substring(0, eqIndex).trim();
-        const value = line.substring(eqIndex + 1).trim();
+        let value = line.substring(eqIndex + 1).trim();
+        if (value.startsWith('"') && value.endsWith('"')) {
+          value = value.slice(1, -1);
+        }
         meta[key] = value;
       }
     }
@@ -134,6 +140,34 @@ export async function getRequestMetadata(rid: string): Promise<Record<string, st
   } catch {
     return {};
   }
+}
+
+function getFileDuration(filepath: string): number {
+  const MUSIC_MOUNT = process.env.MUSIC_MOUNT || "/app/music";
+  const cached = durationCache.get(filepath);
+  if (cached && Date.now() - cached.cachedAt < DURATION_CACHE_TTL) {
+    return cached.duration;
+  }
+
+  const localPath = filepath.replace(/^\/music\//, `${MUSIC_MOUNT}/`);
+
+  try {
+    const result = spawnSync("ffprobe", [
+      "-v", "quiet",
+      "-show_entries", "format=duration",
+      "-of", "default=noprint_wrappers=1:nokey=1",
+      localPath,
+    ], { timeout: 5000 });
+
+    if (result.status === 0) {
+      const dur = parseFloat(result.stdout.toString().trim());
+      if (!isNaN(dur) && dur > 0) {
+        durationCache.set(filepath, { duration: dur, cachedAt: Date.now() });
+        return dur;
+      }
+    }
+  } catch {}
+  return 0;
 }
 
 export async function getStreamStatus() {
@@ -148,6 +182,9 @@ export async function getStreamStatus() {
         artist: null,
         title: null,
         uptime: "0",
+        duration: 0,
+        elapsed: 0,
+        metadata: {},
       };
     }
 
@@ -156,6 +193,20 @@ export async function getStreamStatus() {
       sendCommand("uptime").catch(() => ["0"]),
     ]);
 
+    let elapsed = 0;
+    if (meta.on_air_timestamp) {
+      const startTime = parseFloat(meta.on_air_timestamp);
+      if (!isNaN(startTime)) {
+        elapsed = Math.floor((Date.now() / 1000) - startTime);
+      }
+    }
+
+    let duration = 0;
+    const filename = meta.filename || meta.initial_uri || "";
+    if (filename) {
+      duration = getFileDuration(filename);
+    }
+
     return {
       connected,
       playing: true,
@@ -163,6 +214,9 @@ export async function getStreamStatus() {
       artist: meta.artist || null,
       title: meta.title || meta.filename || null,
       uptime: uptimeLines[0] || "0",
+      duration,
+      elapsed,
+      metadata: meta,
     };
   } catch {
     return {
@@ -172,6 +226,8 @@ export async function getStreamStatus() {
       artist: null,
       title: null,
       uptime: "0",
+      duration: 0,
+      elapsed: 0,
     };
   }
 }
