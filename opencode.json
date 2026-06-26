@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "spotify": {
+      "type": "local",
+      "command": ["node", "D:/cursos/SEED-AUDIO/spotify-mcp-plus/build/index.js"],
+      "enabled": true
+    }
+  }
+}

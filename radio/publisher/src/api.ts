@@ -1,0 +1,282 @@
+import { Hono } from "hono";
+import { cors } from "hono/cors";
+import { loadTimeline, saveTimeline, addTrack, insertTrack, updateTrack, removeTrack, reorderTracks, setCurrentIndex, clearTimeline, getCurrentTrack, getTrackById } from "./playlist";
+import { initLibrary, listSongs, listInterludios, deleteTrack, getLibraryStats } from "./library";
+import { downloadFromSpotify, getDownloadJob, getAllDownloads, cancelDownload, clearDownloads } from "./spotdl";
+import { skipTrack, pausePlayback, startPlayback, getStreamStatus, reloadPlaylist, isLiquidsoapConnected } from "./liquidsoap";
+import { loadConfig, updateConfig } from "./config";
+import type { Track } from "./types";
+
+const app = new Hono();
+
+app.use("*", cors());
+
+// ============================================================
+// SYSTEM
+// ============================================================
+
+app.get("/api/system/status", async (c) => {
+  const liquidsoapConnected = isLiquidsoapConnected();
+  const config = loadConfig();
+  return c.json({
+    ok: true,
+    data: {
+      liquidsoap: {
+        connected: liquidsoapConnected,
+        telnetPort: parseInt(process.env.LIQUIDSOAP_TELNET_PORT || "1234"),
+        harbourPort: parseInt(process.env.LIQUIDSOAP_HARBOUR_PORT || "8000"),
+        streamUrl: `http://localhost:${process.env.LIQUIDSOAP_HARBOUR_PORT || "8000"}/radiobloom.mp3`,
+      },
+      config,
+    },
+  });
+});
+
+app.get("/api/system/config", (c) => {
+  return c.json({ ok: true, data: loadConfig() });
+});
+
+app.put("/api/system/config", async (c) => {
+  const body = await c.req.json();
+  const config = updateConfig(body);
+  return c.json({ ok: true, data: config });
+});
+
+// ============================================================
+// LIBRARY
+// ============================================================
+
+app.get("/api/library", (c) => {
+  const songs = listSongs();
+  const interludios = listInterludios();
+  return c.json({ ok: true, data: { songs, interludios } });
+});
+
+app.get("/api/library/songs", (c) => {
+  return c.json({ ok: true, data: listSongs() });
+});
+
+app.get("/api/library/interludios", (c) => {
+  return c.json({ ok: true, data: listInterludios() });
+});
+
+app.get("/api/library/stats", (c) => {
+  return c.json({ ok: true, data: getLibraryStats() });
+});
+
+app.get("/api/library/:file", (c) => {
+  const file = c.req.param("file");
+  const allTracks = [...listSongs(), ...listInterludios()];
+  const track = allTracks.find((t) => t.file === file);
+  if (!track) return c.json({ ok: false, error: "Track not found" }, 404);
+  return c.json({ ok: true, data: track });
+});
+
+app.delete("/api/library/:file", (c) => {
+  const file = c.req.param("file");
+  const deleted = deleteTrack(file);
+  if (!deleted) return c.json({ ok: false, error: "File not found or could not delete" }, 404);
+  return c.json({ ok: true, data: { deleted: file } });
+});
+
+app.post("/api/library/scan", (c) => {
+  initLibrary();
+  const stats = getLibraryStats();
+  return c.json({ ok: true, data: stats });
+});
+
+// ============================================================
+// TIMELINE / SCHEDULE
+// ============================================================
+
+app.get("/api/timeline", (c) => {
+  const timeline = loadTimeline();
+  return c.json({ ok: true, data: timeline });
+});
+
+app.get("/api/timeline/current", (c) => {
+  const track = getCurrentTrack();
+  return c.json({ ok: true, data: track });
+});
+
+app.get("/api/timeline/:trackId", (c) => {
+  const id = c.req.param("trackId");
+  const track = getTrackById(id);
+  if (!track) return c.json({ ok: false, error: "Track not found" }, 404);
+  return c.json({ ok: true, data: track });
+});
+
+app.post("/api/timeline", async (c) => {
+  const body = await c.req.json();
+  const timeline = loadTimeline();
+  if (body.tracks) timeline.tracks = body.tracks;
+  if (typeof body.currentIndex === "number") timeline.currentIndex = body.currentIndex;
+  if (typeof body.isPlaying === "boolean") timeline.isPlaying = body.isPlaying;
+  saveTimeline(timeline);
+  return c.json({ ok: true, data: timeline });
+});
+
+app.post("/api/timeline/tracks", async (c) => {
+  const body = await c.req.json();
+  const track: Track = body;
+  if (!track.file || !track.title) {
+    return c.json({ ok: false, error: "file and title are required" }, 400);
+  }
+  if (!track.id) track.id = `tl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  if (!track.addedAt) track.addedAt = new Date().toISOString();
+  if (!track.type) track.type = "song";
+  if (!track.duration) track.duration = 0;
+  const timeline = addTrack(track);
+  return c.json({ ok: true, data: timeline });
+});
+
+app.post("/api/timeline/tracks/insert", async (c) => {
+  const body = await c.req.json();
+  const { index, track } = body;
+  if (typeof index !== "number" || !track) {
+    return c.json({ ok: false, error: "index and track are required" }, 400);
+  }
+  if (!track.id) track.id = `tl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  if (!track.addedAt) track.addedAt = new Date().toISOString();
+  if (!track.type) track.type = "song";
+  if (!track.duration) track.duration = 0;
+  const timeline = insertTrack(index, track);
+  return c.json({ ok: true, data: timeline });
+});
+
+app.put("/api/timeline/tracks/:trackId", async (c) => {
+  const id = c.req.param("trackId");
+  const updates = await c.req.json();
+  const track = updateTrack(id, updates);
+  if (!track) return c.json({ ok: false, error: "Track not found" }, 404);
+  return c.json({ ok: true, data: track });
+});
+
+app.delete("/api/timeline/tracks/:trackId", (c) => {
+  const id = c.req.param("trackId");
+  const timeline = removeTrack(id);
+  return c.json({ ok: true, data: timeline });
+});
+
+app.post("/api/timeline/tracks/reorder", async (c) => {
+  const body = await c.req.json();
+  const { fromIndex, toIndex } = body;
+  if (typeof fromIndex !== "number" || typeof toIndex !== "number") {
+    return c.json({ ok: false, error: "fromIndex and toIndex are required" }, 400);
+  }
+  const timeline = reorderTracks(fromIndex, toIndex);
+  return c.json({ ok: true, data: timeline });
+});
+
+app.post("/api/timeline/tracks/clear", (c) => {
+  const timeline = clearTimeline();
+  return c.json({ ok: true, data: timeline });
+});
+
+app.post("/api/timeline/play", async (c) => {
+  const body = await c.req.json();
+  const { index } = body;
+  if (typeof index !== "number") {
+    return c.json({ ok: false, error: "index is required" }, 400);
+  }
+  const timeline = setCurrentIndex(index);
+  return c.json({ ok: true, data: timeline });
+});
+
+// ============================================================
+// DOWNLOADS (spotDL)
+// ============================================================
+
+app.post("/api/downloads", async (c) => {
+  const body = await c.req.json();
+  const { url } = body;
+  if (!url) return c.json({ ok: false, error: "url is required" }, 400);
+
+  const job = await downloadFromSpotify(url);
+  return c.json({ ok: true, data: job });
+});
+
+app.get("/api/downloads", (c) => {
+  return c.json({ ok: true, data: getAllDownloads() });
+});
+
+app.get("/api/downloads/:id", (c) => {
+  const id = c.req.param("id");
+  const job = getDownloadJob(id);
+  if (!job) return c.json({ ok: false, error: "Download not found" }, 404);
+  return c.json({ ok: true, data: job });
+});
+
+app.delete("/api/downloads/:id", (c) => {
+  const id = c.req.param("id");
+  const cancelled = cancelDownload(id);
+  if (!cancelled) return c.json({ ok: false, error: "Download not found or already finished" }, 404);
+  return c.json({ ok: true, data: { cancelled: id } });
+});
+
+app.delete("/api/downloads", (c) => {
+  clearDownloads();
+  return c.json({ ok: true, data: { cleared: true } });
+});
+
+// ============================================================
+// STREAM CONTROL (Liquidsoap)
+// ============================================================
+
+app.get("/api/stream", async (c) => {
+  const status = await getStreamStatus();
+  return c.json({ ok: true, data: status });
+});
+
+app.post("/api/stream/play", async (c) => {
+  try {
+    await startPlayback();
+    return c.json({ ok: true, data: { action: "play" } });
+  } catch (err: any) {
+    return c.json({ ok: false, error: err.message }, 500);
+  }
+});
+
+app.post("/api/stream/pause", async (c) => {
+  try {
+    await pausePlayback();
+    return c.json({ ok: true, data: { action: "pause" } });
+  } catch (err: any) {
+    return c.json({ ok: false, error: err.message }, 500);
+  }
+});
+
+app.post("/api/stream/skip", async (c) => {
+  try {
+    await skipTrack();
+    return c.json({ ok: true, data: { action: "skip" } });
+  } catch (err: any) {
+    return c.json({ ok: false, error: err.message }, 500);
+  }
+});
+
+app.post("/api/stream/reload", async (c) => {
+  try {
+    await reloadPlaylist();
+    return c.json({ ok: true, data: { action: "reload" } });
+  } catch (err: any) {
+    return c.json({ ok: false, error: err.message }, 500);
+  }
+});
+
+// ============================================================
+// HEALTH
+// ============================================================
+
+app.get("/api/health", (c) => {
+  return c.json({
+    ok: true,
+    data: {
+      status: "running",
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+    },
+  });
+});
+
+export default app;
