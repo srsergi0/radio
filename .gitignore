@@ -38,5 +38,9 @@ desktop.ini
 *.swp
 *.swo
 
+# Obsolete radio directories
+radio/icecast/
+radio/web/
+
 # Embedded repos
 spotify-mcp-plus/
