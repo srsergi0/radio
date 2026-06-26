@@ -416,6 +416,24 @@ export function removeLibraryTrack(file: string) {
   getDB().run("DELETE FROM library_tracks WHERE file = ?", file);
 }
 
+export function searchLibrary(query: string): Track[] {
+  const q = `%${query}%`;
+  const rows = getDB().query(
+    "SELECT * FROM library_tracks WHERE title LIKE ? OR artist LIKE ? OR album LIKE ? ORDER BY file"
+  ).all(q, q, q) as any[];
+  return rows.map((r: any) => ({
+    id: fileToId(r.file),
+    type: r.type,
+    file: r.file,
+    title: r.title,
+    artist: r.artist || undefined,
+    album: r.album || undefined,
+    duration: r.duration,
+    spotifyUrl: r.spotify_url || undefined,
+    addedAt: r.added_at,
+  }));
+}
+
 export function getLibraryStats() {
   const d = getDB();
   const stats = d.query(`

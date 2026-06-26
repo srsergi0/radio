@@ -1,7 +1,8 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { listSongs, listInterludios, deleteTrack, getLibraryStats, scanLibrary, getTrackByUrl } from "./library";
-import { skipTrack, pausePlayback, startPlayback, getStreamStatus, reloadPlaylist, isLiquidsoapConnected, queuePush, queueList, queueClear, playFileNow, queueLength, sendCommand } from "./liquidsoap";
+import { listSongs, listInterludios, deleteTrack, getLibraryStats, scanLibrary, getTrackByUrl, getTrackByFile } from "./library";
+import { skipTrack, pausePlayback, startPlayback, getStreamStatus, reloadPlaylist, isLiquidsoapConnected, queuePush, queueList, queueClear, queueRemove, queueInsert, playFileNow, queueLength, sendCommand } from "./liquidsoap";
+import { searchLibrary } from "./db";
 import { loadConfig, updateConfig } from "./config";
 
 const app = new Hono();
@@ -80,6 +81,13 @@ app.delete("/api/library/track", (c) => {
 app.post("/api/library/scan", (c) => {
   const stats = scanLibrary();
   return c.json({ ok: true, data: stats });
+});
+
+app.get("/api/library/search", (c) => {
+  const q = c.req.query("q");
+  if (!q) return c.json({ ok: false, error: "q query param required" }, 400);
+  const results = searchLibrary(q);
+  return c.json({ ok: true, data: results });
 });
 
 app.post("/api/library/:id/play", async (c) => {
@@ -183,6 +191,44 @@ app.delete("/api/stream/queue", async (c) => {
   try {
     await queueClear();
     return c.json({ ok: true, data: { cleared: true } });
+  } catch (err: any) {
+    return c.json({ ok: false, error: err.message }, 500);
+  }
+});
+
+app.delete("/api/stream/queue/:rid", async (c) => {
+  try {
+    const rid = c.req.param("rid");
+    const ok = await queueRemove(rid);
+    if (!ok) return c.json({ ok: false, error: "RID not found in queue (ya pasó a reproducción o no existe)" }, 404);
+    const list = await queueList();
+    return c.json({ ok: true, data: { removed: rid, queue: list } });
+  } catch (err: any) {
+    return c.json({ ok: false, error: err.message }, 500);
+  }
+});
+
+app.post("/api/stream/queue/insert", async (c) => {
+  try {
+    const body = await c.req.json();
+    const { index, url } = body;
+    if (typeof index !== "number" || !url) {
+      return c.json({ ok: false, error: "index and url are required" }, 400);
+    }
+
+    const existing = getTrackByUrl(url);
+    if (existing) {
+      const ok = await queueInsert(index, `/music/${existing.file}`);
+      if (!ok) return c.json({ ok: false, error: "Failed to insert" }, 500);
+      const list = await queueList();
+      return c.json({ ok: true, data: { index, track: existing, queue: list } });
+    }
+
+    const { downloadFromSpotify } = await import("./spotdl");
+    const job = await downloadFromSpotify(url, async (track) => {
+      await queueInsert(index, `/music/${track.file}`).catch(() => {});
+    });
+    return c.json({ ok: true, data: { source: "download", job } });
   } catch (err: any) {
     return c.json({ ok: false, error: err.message }, 500);
   }

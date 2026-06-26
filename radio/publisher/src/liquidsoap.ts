@@ -275,6 +275,54 @@ export async function queueList(): Promise<{ rid: string; artist: string; title:
   }
 }
 
+export async function queueRemove(rid: string): Promise<boolean> {
+  try {
+    const lines = await sendCommand("queue.queue");
+    if (lines.length === 0) return false;
+    const queued = lines[0].split(/\s+/).filter(Boolean);
+    const idx = queued.indexOf(rid);
+    if (idx === -1) return false;
+
+    const uris: string[] = [];
+    for (const r of queued) {
+      const meta = await getRequestMetadata(r).catch(() => ({}));
+      uris.push(meta.initial_uri || meta.filename || "");
+    }
+    if (idx >= uris.length) return false;
+    uris.splice(idx, 1);
+    await sendCommand("queue.clear");
+    await new Promise((r) => setTimeout(r, 500));
+    for (const uri of uris) {
+      if (uri) await queuePush(uri).catch(() => {});
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function queueInsert(index: number, filepath: string): Promise<boolean> {
+  try {
+    const lines = await sendCommand("queue.queue");
+    const queued = lines.length > 0 ? lines[0].split(/\s+/).filter(Boolean) : [];
+    const uris: string[] = [];
+    for (const r of queued) {
+      const meta = await getRequestMetadata(r).catch(() => ({}));
+      uris.push(meta.initial_uri || meta.filename || "");
+    }
+    const safeIndex = Math.max(0, Math.min(index, uris.length));
+    uris.splice(safeIndex, 0, filepath);
+    await sendCommand("queue.clear");
+    await new Promise((r) => setTimeout(r, 500));
+    for (const uri of uris) {
+      if (uri) await queuePush(uri).catch(() => {});
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function queueClear(): Promise<void> {
   try {
     await sendCommand("queue.clear");
