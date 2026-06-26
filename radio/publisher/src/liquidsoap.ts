@@ -98,8 +98,9 @@ export async function clearAndPush(filepath: string): Promise<string | null> {
 
 export async function queueLength(): Promise<number> {
   try {
-    const items = await sendCommand("queue.queue");
-    return items.length;
+    const lines = await sendCommand("queue.queue");
+    if (lines.length === 0) return 0;
+    return lines[0].split(/\s+/).filter(Boolean).length;
   } catch {
     return 0;
   }
@@ -254,9 +255,21 @@ export async function queuePush(filepath: string): Promise<string | null> {
   }
 }
 
-export async function queueList(): Promise<string[]> {
+export async function queueList(): Promise<{ rid: string; artist: string; title: string }[]> {
   try {
-    return await sendCommand("queue.queue");
+    const lines = await sendCommand("queue.queue");
+    if (lines.length === 0) return [];
+    const rids = lines[0].split(/\s+/).filter(Boolean);
+    const items: { rid: string; artist: string; title: string }[] = [];
+    for (const rid of rids) {
+      const meta = await getRequestMetadata(rid).catch(() => ({}));
+      items.push({
+        rid,
+        artist: meta.artist || "",
+        title: meta.title || meta.filename || rid,
+      });
+    }
+    return items;
   } catch {
     return [];
   }
